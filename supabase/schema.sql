@@ -7,9 +7,11 @@ create table if not exists public.allowed_users (
   email text primary key
 );
 
--- TROQUE pelos e-mails reais e adicione uma linha por pessoa:
+-- Uma linha por pessoa autorizada:
 insert into public.allowed_users (email) values
-  ('pohlfelipe27@gmail.com')
+  ('pohlfelipe27@gmail.com'),
+  ('patypohl@gmail.com'),
+  ('pohlhenrique@gmail.com')
 on conflict do nothing;
 
 create or replace function public.is_allowed()
