@@ -206,11 +206,19 @@
   function renderKpis(days, total, budget) {
     const trip = state.trip;
     const today = todayISO();
-    // Dias decorridos: até hoje (se a viagem está em andamento) ou a viagem toda.
-    let elapsed = days.filter((d) => d <= today).length;
-    if (elapsed === 0) elapsed = new Set(state.expenses.map((e) => e.date)).size || 1;
-    const avg = total / elapsed;
-    const projection = avg * days.length;
+    // O primeiro e o último dia (dias de voo) ficam fora da média por dia;
+    // na projeção entram pelo valor real lançado neles.
+    const avgDays = days.length >= 3 ? days.slice(1, -1) : days;
+    const edgeTotal = sum(state.expenses.filter((e) => !avgDays.includes(e.date)));
+    const avgTotal = total - edgeTotal;
+    // Dias decorridos: até hoje (se a viagem está em andamento) ou os dias que já têm gasto.
+    let elapsed = avgDays.filter((d) => d <= today).length;
+    if (elapsed === 0) elapsed = new Set(state.expenses.filter((e) => avgDays.includes(e.date)).map((e) => e.date)).size;
+    const avg = elapsed ? avgTotal / elapsed : null;
+    const projection = avg == null ? null : edgeTotal + avg * avgDays.length;
+    const remainingDays = days.filter((d) => d > today).length;
+    const dailyGoal = budget ? (budget - edgeTotal) / avgDays.length : 0;
+    const excludedNote = avgDays.length < days.length ? `sem ${fmtDay(days[0])} e ${fmtDay(days[days.length - 1])}` : "";
     const biggest = state.expenses.reduce((m, e) => (Number(e.amount) > Number(m?.amount || -1) ? e : m), null);
     const rate = Number(trip.brl_rate) || 0;
     const gbp = state.expenses.filter((e) => e.original_currency === "GBP");
@@ -221,17 +229,23 @@
         ? {
             label: "Orçamento restante",
             value: money(budget - total),
-            sub: budget - total < 0 ? "Acima do orçamento" : `${money((budget - total) / Math.max(days.length - elapsed, 1))} por dia restante`,
+            sub: budget - total < 0 ? "Acima do orçamento" : `${money((budget - total) / Math.max(remainingDays, 1))} por dia restante`,
             cls: budget - total < 0 ? "bad" : "ok",
           }
         : { label: "Orçamento", value: "—", sub: "Defina em Editar viagem" },
-      { label: "Média por dia", value: money(avg), sub: budget ? `Meta: ${money(budget / days.length)}/dia` : `${elapsed} dia(s) considerados` },
       {
-        label: "Projeção da viagem",
-        value: money(projection),
-        sub: budget ? (projection > budget ? `${money(projection - budget)} acima` : `${money(budget - projection)} abaixo`) : "Mantendo a média atual",
-        cls: budget ? (projection > budget ? "bad" : "ok") : "",
+        label: "Média por dia",
+        value: avg == null ? "—" : money(avg),
+        sub: [budget ? `Meta: ${money(dailyGoal)}/dia` : `${elapsed} dia(s) considerados`, excludedNote].filter(Boolean).join(" · "),
       },
+      projection == null
+        ? { label: "Projeção da viagem", value: "—", sub: `Aparece quando houver gastos de ${fmtDay(avgDays[0])} a ${fmtDay(avgDays[avgDays.length - 1])}` }
+        : {
+            label: "Projeção da viagem",
+            value: money(projection),
+            sub: budget ? (projection > budget ? `${money(projection - budget)} acima` : `${money(budget - projection)} abaixo`) : "Mantendo a média atual",
+            cls: budget ? (projection > budget ? "bad" : "ok") : "",
+          },
       { label: "Maior gasto", value: biggest ? money(biggest.amount) : "—", sub: biggest ? biggest.description : "" },
       { label: "Lançamentos", value: String(state.expenses.length), sub: total ? `Ticket médio ${money(total / state.expenses.length)}` : "" },
     ];
