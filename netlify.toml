@@ -1,0 +1,14 @@
+# Configuração da Netlify: site estático, sem etapa de build.
+[build]
+  publish = "."
+
+# O service worker e a configuração precisam sempre da versão mais nova.
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/js/*"
+  [headers.values]
+    Cache-Control = "no-cache"
