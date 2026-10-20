@@ -7,6 +7,10 @@
   <meta name="robots" content="noindex, nofollow" />
   <title>Europe Costs</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2307090d'/><path d='M8 22V10h12M8 16h9M8 22h12' stroke='%233987e5' stroke-width='3' fill='none' stroke-linecap='round'/></svg>" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
@@ -29,10 +33,15 @@
         <select id="trip-select" aria-label="Viagem"></select>
         <button class="btn ghost" id="edit-trip-btn" title="Editar viagem">Editar</button>
         <button class="btn" id="new-trip-btn">+ Viagem</button>
+        <button class="sync hidden" id="sync-badge" type="button" title="Tentar enviar agora"></button>
         <span id="user-email" class="muted small"></span>
         <button class="btn ghost" id="logout-btn">Sair</button>
       </div>
     </header>
+
+    <div id="offline-banner" class="banner offline hidden">
+      Sem internet: pode continuar lançando. Os gastos ficam guardados neste aparelho e são enviados sozinhos quando a conexão voltar.
+    </div>
 
     <div id="local-banner" class="banner hidden">
       Modo local: os gastos estão salvos <strong>apenas neste navegador</strong>.
@@ -66,9 +75,18 @@
             <input type="hidden" name="id" />
             <div class="row">
               <label>Data <input type="date" name="date" required /></label>
-              <label><span>Valor <span class="cur-label"></span></span>
-                <input type="number" name="amount" step="0.01" min="0" inputmode="decimal" required placeholder="0,00" />
+              <label><span>Valor</span>
+                <span class="amount-group">
+                  <input type="number" name="amount" step="0.01" min="0" inputmode="decimal" required placeholder="0,00" />
+                  <select name="currency" id="currency-select" aria-label="Moeda"></select>
+                </span>
               </label>
+            </div>
+            <div class="row hidden" id="fx-row">
+              <label><span>Cotação: 1 £ = <span class="cur-label"></span></span>
+                <input type="number" name="fx_rate" step="0.0001" min="0" inputmode="decimal" placeholder="Ex.: 1,17" />
+              </label>
+              <div class="fx-preview" id="fx-preview"></div>
             </div>
             <label>Descrição <input type="text" name="description" required maxlength="120" placeholder="Ex.: Jantar em Roma" /></label>
             <div class="row">
@@ -113,6 +131,18 @@
           </div>
         </section>
 
+        <section class="grid-2" id="people-section">
+          <div class="card">
+            <h2>Por pessoa (quem lançou)</h2>
+            <div class="table-wrap"><table id="people-table"></table></div>
+            <p class="small muted" id="people-note"></p>
+          </div>
+          <div class="card chart-card">
+            <h2>Total lançado por pessoa</h2>
+            <div class="chart-box"><canvas id="chart-people" role="img" aria-label="Total lançado por pessoa"></canvas></div>
+          </div>
+        </section>
+
         <section class="card">
           <div class="table-head">
             <h2>Todos os gastos</h2>
@@ -120,6 +150,7 @@
               <input type="search" id="filter-text" placeholder="Buscar…" aria-label="Buscar" />
               <select id="filter-category" aria-label="Filtrar categoria"></select>
               <select id="filter-day" aria-label="Filtrar dia"></select>
+              <select id="filter-person" aria-label="Filtrar pessoa"></select>
               <button class="btn ghost" id="export-btn">Exportar CSV</button>
             </div>
           </div>
@@ -151,7 +182,10 @@
           </select>
         </label>
       </div>
-      <label>Cotação para Real (1 unidade = R$) <input type="number" name="brl_rate" step="0.0001" min="0" placeholder="Ex.: 6,20 — opcional" /></label>
+      <div class="row">
+        <label>Cotação para Real (1 unidade = R$) <input type="number" name="brl_rate" step="0.0001" min="0" placeholder="Ex.: 6,20 — opcional" /></label>
+        <label>Cotação da libra (1 £ = moeda da viagem) <input type="number" name="gbp_rate" step="0.0001" min="0" placeholder="Ex.: 1,17 — opcional" /></label>
+      </div>
       <div class="form-actions">
         <button class="btn primary" value="save">Salvar</button>
         <button class="btn ghost" value="cancel" formnovalidate>Cancelar</button>

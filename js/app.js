@@ -10,6 +10,10 @@
   ];
   const PAYMENTS = ["Cartão de crédito", "Cartão de débito", "Dinheiro", "Cartão pré-pago / Wise", "Pix", "Outro"];
   const CAT = Object.fromEntries(CATEGORIES.map((c) => [c.id, c]));
+  const PEOPLE = Object.fromEntries(
+    Object.entries((window.APP_CONFIG || {}).PEOPLE || {}).map(([email, name]) => [email.toLowerCase(), name])
+  );
+  const FX_KEY = "europe-costs:last-gbp-rate";
 
   const $ = (sel) => document.querySelector(sel);
   const state = { trips: [], trip: null, expenses: [], charts: {} };
@@ -19,6 +23,12 @@
     new Intl.NumberFormat("pt-BR", { style: "currency", currency: cur || "EUR" }).format(v || 0);
   const money = (v) => fmtMoney(v, state.trip && state.trip.currency);
   const brl = (v) => fmtMoney(v, "BRL");
+  const curSymbol = (cur) =>
+    new Intl.NumberFormat("pt-BR", { style: "currency", currency: cur }).formatToParts(0).find((p) => p.type === "currency").value;
+  const personName = (email) => {
+    if (!email) return "—";
+    return PEOPLE[email.toLowerCase()] || email.split("@")[0];
+  };
   const parseISO = (s) => {
     const [y, m, d] = s.split("-").map(Number);
     return new Date(Date.UTC(y, m - 1, d));
@@ -38,6 +48,8 @@
     return days;
   }
   const sum = (arr) => arr.reduce((a, e) => a + Number(e.amount || 0), 0);
+  const round2 = (v) => Math.round(v * 100) / 100;
+  const num = (v) => Number(String(v).replace(",", "."));
   function el(tag, attrs = {}, ...children) {
     const n = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
@@ -49,14 +61,16 @@
     for (const c of children) n.append(c instanceof Node ? c : document.createTextNode(c ?? ""));
     return n;
   }
-  function toast(msg) {
+  function toast(msg, ms = 2600) {
     const t = $("#toast");
     t.textContent = msg;
     t.classList.add("show");
     clearTimeout(toast._t);
-    toast._t = setTimeout(() => t.classList.remove("show"), 2600);
+    toast._t = setTimeout(() => t.classList.remove("show"), ms);
   }
   const errMsg = (e) => (e && e.message) || String(e);
+  function safeGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+  function safeSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
 
   // ---------- Autenticação ----------
   async function boot() {
@@ -64,6 +78,8 @@
     bindEvents();
     if (Store.mode === "local") $("#local-banner").classList.remove("hidden");
     Store.onAuthChange((user) => (user ? showApp(user) : showLogin()));
+    Store.onQueueChange(onQueueChange);
+    updateConnectivity();
     const user = await Store.getUser();
     user ? showApp(user) : showLogin();
   }
@@ -77,17 +93,45 @@
   async function showApp(user) {
     $("#login-view").classList.add("hidden");
     $("#app-view").classList.remove("hidden");
-    $("#user-email").textContent = user.email || "";
+    $("#user-email").textContent = Store.mode === "cloud" ? personName(user.email) : "modo local";
     $("#logout-btn").classList.toggle("hidden", Store.mode === "local");
     if (appStarted) return;
     appStarted = true;
     Store.subscribe(debounce(() => loadTrips(state.trip && state.trip.id), 400));
     await loadTrips();
+    Store.flush();
   }
 
   function debounce(fn, ms) {
     let t;
     return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+  }
+
+  // ---------- Offline / sincronização ----------
+  function updateConnectivity() {
+    $("#offline-banner").classList.toggle("hidden", Store.mode === "local" || navigator.onLine);
+    updateSyncBadge(Store.pendingCount());
+  }
+
+  function updateSyncBadge(pending) {
+    const b = $("#sync-badge");
+    b.classList.toggle("hidden", !pending);
+    b.textContent = `⏳ ${pending} não enviado${pending > 1 ? "s" : ""}`;
+  }
+
+  function onQueueChange({ pending, sent }) {
+    updateSyncBadge(pending);
+    if (sent && state.trip) {
+      toast(`${sent} lançamento${sent > 1 ? "s" : ""} pendente${sent > 1 ? "s" : ""} enviado${sent > 1 ? "s" : ""} ✓`);
+      reloadExpenses();
+    }
+  }
+
+  async function reloadExpenses() {
+    try {
+      state.expenses = await Store.listExpenses(state.trip.id);
+      render();
+    } catch {}
   }
 
   // ---------- Carregamento ----------
@@ -114,6 +158,7 @@
   }
 
   async function selectTrip(id) {
+    const changed = !state.trip || state.trip.id !== id;
     state.trip = state.trips.find((t) => t.id === id);
     safeSet("europe-costs:trip", id);
     try {
@@ -122,26 +167,23 @@
       toast("Erro ao carregar gastos: " + errMsg(e));
       state.expenses = [];
     }
-    resetExpenseForm();
+    // Não apaga o formulário se alguém estava no meio de um lançamento.
+    if (changed || !$("#expense-form").amount.value) resetExpenseForm();
     render();
   }
-
-  function safeGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
-  function safeSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
 
   // ---------- Renderização ----------
   function render() {
     const trip = state.trip;
     const days = tripDays(trip);
-    const ex = state.expenses;
-    const total = sum(ex);
+    const total = sum(state.expenses);
     const budget = Number(trip.budget) || 0;
 
     $("#trip-name").textContent = trip.name;
     $("#trip-dates").textContent =
       `${fmtDay(trip.start_date, { day: "2-digit", month: "long", year: "numeric" })} → ` +
       `${fmtDay(trip.end_date, { day: "2-digit", month: "long", year: "numeric" })} · ${days.length} dias`;
-    document.querySelectorAll(".cur-label").forEach((n) => (n.textContent = `(${trip.currency})`));
+    document.querySelectorAll(".cur-label").forEach((n) => (n.textContent = curSymbol(trip.currency)));
 
     // Barra de orçamento
     $("#budget-progress-wrap").classList.toggle("hidden", !budget);
@@ -156,6 +198,7 @@
     renderKpis(days, total, budget);
     renderCharts(days, budget);
     renderCategoryTable(total);
+    renderPeople(total);
     renderFilters(days);
     renderExpenseTable();
   }
@@ -170,6 +213,7 @@
     const projection = avg * days.length;
     const biggest = state.expenses.reduce((m, e) => (Number(e.amount) > Number(m?.amount || -1) ? e : m), null);
     const rate = Number(trip.brl_rate) || 0;
+    const gbp = state.expenses.filter((e) => e.original_currency === "GBP");
 
     const tiles = [
       { label: "Total gasto", value: money(total), sub: rate ? `≈ ${brl(total * rate)}` : `${state.expenses.length} lançamentos` },
@@ -191,6 +235,13 @@
       { label: "Maior gasto", value: biggest ? money(biggest.amount) : "—", sub: biggest ? biggest.description : "" },
       { label: "Lançamentos", value: String(state.expenses.length), sub: total ? `Ticket médio ${money(total / state.expenses.length)}` : "" },
     ];
+    if (gbp.length && trip.currency !== "GBP") {
+      tiles.push({
+        label: "Gasto em libras",
+        value: fmtMoney(gbp.reduce((a, e) => a + Number(e.original_amount || 0), 0), "GBP"),
+        sub: `≈ ${money(sum(gbp))} · ${gbp.length} lançamento(s)`,
+      });
+    }
     $("#kpis").replaceChildren(
       ...tiles.map((t) =>
         el("div", { class: "card kpi" },
@@ -389,24 +440,84 @@
     );
   }
 
+  // Quem lançou o quê, e o saldo se a conta for dividida igualmente.
+  function renderPeople(total) {
+    const section = $("#people-section");
+    section.classList.toggle("hidden", Store.mode === "local");
+    if (Store.mode === "local") return;
+
+    const emails = new Set(Object.keys(PEOPLE));
+    state.expenses.forEach((e) => e.created_by && emails.add(e.created_by.toLowerCase()));
+    const participants = Object.keys(PEOPLE).length || emails.size || 1;
+    const share = total / participants;
+    const rows = [...emails]
+      .map((email) => {
+        const items = state.expenses.filter((e) => (e.created_by || "").toLowerCase() === email);
+        return { email, name: personName(email), n: items.length, v: sum(items) };
+      })
+      .sort((a, b) => b.v - a.v);
+
+    const balanceCell = (b) => {
+      if (Math.abs(b) < 0.005) return el("td", { class: "num" }, "quite");
+      return el("td", { class: "num " + (b > 0 ? "pos" : "neg") }, (b > 0 ? "recebe " : "deve ") + money(Math.abs(b)));
+    };
+    $("#people-table").replaceChildren(
+      el("thead", {}, el("tr", {},
+        el("th", {}, "Pessoa"), el("th", { class: "num" }, "Qtd."), el("th", { class: "num" }, "Total"),
+        el("th", { class: "num" }, "%"), el("th", { class: "num" }, "Divisão igual")
+      )),
+      el("tbody", {}, ...rows.map((r) =>
+        el("tr", {},
+          el("td", {}, r.name),
+          el("td", { class: "num" }, String(r.n)),
+          el("td", { class: "num" }, money(r.v)),
+          el("td", { class: "num" }, total ? ((r.v / total) * 100).toFixed(1) + "%" : "—"),
+          balanceCell(r.v - share)
+        )
+      ))
+    );
+    $("#people-note").textContent = total
+      ? `Dividindo ${money(total)} igualmente entre ${participants} pessoas, a parte de cada um é ${money(share)}. ` +
+        `O saldo considera que quem lançou o gasto foi quem pagou.`
+      : "";
+
+    if (!window.Chart) return;
+    const withValue = rows.filter((r) => r.v > 0);
+    horizontalBar("people", "chart-people", withValue.map((r) => r.name), withValue.map((r) => r.v), css("--blue"));
+  }
+
   function renderFilters(days) {
     const fc = $("#filter-category");
     const fd = $("#filter-day");
-    const keepC = fc.value, keepD = fd.value;
+    const fp = $("#filter-person");
+    const keepC = fc.value, keepD = fd.value, keepP = fp.value;
     fc.replaceChildren(el("option", { value: "" }, "Todas categorias"), ...CATEGORIES.map((c) => el("option", { value: c.id }, c.label)));
     fd.replaceChildren(el("option", { value: "" }, "Todos os dias"), ...days.map((d, i) => el("option", { value: d }, `Dia ${i + 1} · ${fmtDay(d)}`)));
+    const people = [...new Set(state.expenses.map((e) => (e.created_by || "").toLowerCase()).filter(Boolean))];
+    fp.replaceChildren(el("option", { value: "" }, "Todas as pessoas"), ...people.map((p) => el("option", { value: p }, personName(p))));
+    fp.classList.toggle("hidden", Store.mode === "local");
     fc.value = keepC;
     fd.value = days.includes(keepD) ? keepD : "";
+    fp.value = people.includes(keepP) ? keepP : "";
   }
 
   function filteredExpenses() {
     const q = $("#filter-text").value.trim().toLowerCase();
     const c = $("#filter-category").value;
     const d = $("#filter-day").value;
+    const p = $("#filter-person").value;
     return state.expenses
-      .filter((e) => (!c || e.category === c) && (!d || e.date === d))
-      .filter((e) => !q || `${e.description} ${e.notes || ""} ${e.payment_method || ""}`.toLowerCase().includes(q))
+      .filter((e) => (!c || e.category === c) && (!d || e.date === d) && (!p || (e.created_by || "").toLowerCase() === p))
+      .filter((e) => !q || `${e.description} ${e.notes || ""} ${e.payment_method || ""} ${personName(e.created_by)}`.toLowerCase().includes(q))
       .sort((a, b) => b.date.localeCompare(a.date) || String(b.created_at).localeCompare(String(a.created_at)));
+  }
+
+  function amountCell(e) {
+    const td = el("td", { class: "num" }, money(e.amount));
+    if (e.original_currency === "GBP" && e.original_amount != null) {
+      td.append(el("span", { class: "orig" }, `${fmtMoney(e.original_amount, "GBP")} × ${Number(e.fx_rate).toLocaleString("pt-BR", { maximumFractionDigits: 4 })}`));
+    }
+    return td;
   }
 
   function renderExpenseTable() {
@@ -418,11 +529,15 @@
           const c = CAT[e.category] || CAT.outros;
           return el("tr", {},
             el("td", {}, fmtDay(e.date)),
-            el("td", {}, e.description, e.notes ? el("div", { class: "small muted" }, e.notes) : ""),
+            el("td", {},
+              e.description,
+              e._pending ? el("span", { class: "pending-tag", title: "Ainda não enviado — sem internet" }, "não enviado") : "",
+              e.notes ? el("div", { class: "small muted" }, e.notes) : ""
+            ),
             el("td", {}, el("span", { class: "dot", style: `background:${c.color}` }), c.label),
             el("td", {}, e.payment_method || "—"),
-            ...(showWho ? [el("td", { class: "small muted" }, (e.created_by || "").split("@")[0])] : []),
-            el("td", { class: "num" }, money(e.amount)),
+            ...(showWho ? [el("td", {}, personName(e.created_by))] : []),
+            amountCell(e),
             el("td", { class: "actions" },
               el("button", { class: "btn ghost icon", title: "Editar", onclick: () => editExpense(e) }, "Editar"),
               " ",
@@ -450,16 +565,40 @@
     return t < start_date ? start_date : t > end_date ? end_date : t;
   }
 
+  const defaultGbpRate = () => state.trip.gbp_rate || safeGet(FX_KEY) || "";
+
+  function fillCurrencySelect() {
+    const cur = state.trip.currency;
+    const opts = [cur].concat(cur === "GBP" ? [] : ["GBP"]);
+    $("#currency-select").replaceChildren(...opts.map((c) => el("option", { value: c }, curSymbol(c))));
+  }
+
+  function updateFx() {
+    const f = $("#expense-form");
+    const isGbp = f.currency.value === "GBP" && state.trip.currency !== "GBP";
+    $("#fx-row").classList.toggle("hidden", !isGbp);
+    f.fx_rate.required = isGbp;
+    const amount = num(f.amount.value);
+    const rate = num(f.fx_rate.value);
+    $("#fx-preview").textContent = isGbp && amount > 0 && rate > 0 ? `= ${money(round2(amount * rate))}` : "";
+  }
+
   function resetExpenseForm() {
     const f = $("#expense-form");
-    const keepCat = f.category.value, keepPay = f.payment_method.value;
+    const keepCat = f.category.value, keepPay = f.payment_method.value, keepCur = f.currency.value;
     f.reset();
     f.id.value = "";
+    delete f.dataset.createdBy;
+    delete f.dataset.createdAt;
     f.date.value = defaultDate();
     f.date.min = state.trip.start_date;
     f.date.max = state.trip.end_date;
     if (keepCat) f.category.value = keepCat;
     if (keepPay) f.payment_method.value = keepPay;
+    fillCurrencySelect();
+    if ([...f.currency.options].some((o) => o.value === keepCur)) f.currency.value = keepCur;
+    f.fx_rate.value = defaultGbpRate();
+    updateFx();
     $("#form-title").textContent = "Novo gasto";
     $("#save-expense-btn").textContent = "Adicionar gasto";
     $("#cancel-edit-btn").classList.add("hidden");
@@ -468,12 +607,24 @@
   function editExpense(e) {
     const f = $("#expense-form");
     f.id.value = e.id;
+    f.dataset.createdBy = e.created_by || "";
+    f.dataset.createdAt = e.created_at || "";
     f.date.value = e.date;
-    f.amount.value = e.amount;
     f.description.value = e.description;
     f.category.value = e.category;
     f.payment_method.value = e.payment_method || "Outro";
     f.notes.value = e.notes || "";
+    fillCurrencySelect();
+    if (e.original_currency === "GBP" && state.trip.currency !== "GBP") {
+      f.currency.value = "GBP";
+      f.amount.value = e.original_amount;
+      f.fx_rate.value = e.fx_rate;
+    } else {
+      f.currency.value = state.trip.currency;
+      f.amount.value = e.amount;
+      f.fx_rate.value = defaultGbpRate();
+    }
+    updateFx();
     $("#form-title").textContent = "Editar gasto";
     $("#save-expense-btn").textContent = "Salvar alterações";
     $("#cancel-edit-btn").classList.remove("hidden");
@@ -484,10 +635,10 @@
   async function removeExpense(e) {
     if (!confirm(`Excluir "${e.description}" (${money(e.amount)})?`)) return;
     try {
-      await Store.deleteExpense(e.id);
+      await Store.deleteExpense(e.id, e.trip_id);
       state.expenses = state.expenses.filter((x) => x.id !== e.id);
       render();
-      toast("Gasto excluído");
+      toast(Store.pendingCount() ? "Excluído neste aparelho — será sincronizado quando houver internet" : "Gasto excluído");
     } catch (err) {
       toast("Erro ao excluir: " + errMsg(err));
     }
@@ -496,31 +647,45 @@
   async function submitExpense(ev) {
     ev.preventDefault();
     const f = ev.target;
-    const amount = Number(String(f.amount.value).replace(",", "."));
+    const amount = num(f.amount.value);
     if (!(amount >= 0)) return toast("Valor inválido");
     const data = {
       trip_id: state.trip.id,
       date: f.date.value,
       description: f.description.value.trim(),
       category: f.category.value,
-      amount: Math.round(amount * 100) / 100,
+      amount: round2(amount),
+      original_currency: null,
+      original_amount: null,
+      fx_rate: null,
       payment_method: f.payment_method.value,
       notes: f.notes.value.trim() || null,
     };
-    if (f.id.value) data.id = f.id.value;
+    if (f.currency.value === "GBP" && state.trip.currency !== "GBP") {
+      const rate = num(f.fx_rate.value);
+      if (!(rate > 0)) return toast("Informe a cotação da libra");
+      Object.assign(data, { original_currency: "GBP", original_amount: round2(amount), fx_rate: rate, amount: round2(amount * rate) });
+      safeSet(FX_KEY, String(rate));
+    }
+    if (f.id.value) {
+      data.id = f.id.value;
+      if (f.dataset.createdBy) data.created_by = f.dataset.createdBy;
+      if (f.dataset.createdAt) data.created_at = f.dataset.createdAt;
+    }
     const btn = $("#save-expense-btn");
     btn.disabled = true;
     try {
       const saved = await Store.saveExpense(data);
       const i = state.expenses.findIndex((x) => x.id === saved.id);
-      if (i >= 0) state.expenses[i] = saved;
+      if (i >= 0) state.expenses[i] = { ...state.expenses[i], ...saved };
       else state.expenses.push(saved);
-      toast(data.id ? "Gasto atualizado" : "Gasto salvo ✓");
+      if (saved._pending) toast("Sem internet: gasto guardado no aparelho. Será enviado sozinho quando a conexão voltar.", 4500);
+      else toast(data.id ? "Gasto atualizado" : "Gasto salvo ✓");
       resetExpenseForm();
       render();
       f.description.focus();
     } catch (err) {
-      toast("Erro ao salvar: " + errMsg(err));
+      toast("Erro ao salvar: " + errMsg(err), 5000);
     } finally {
       btn.disabled = false;
     }
@@ -538,6 +703,7 @@
       f.budget.value = trip.budget ?? "";
       f.currency.value = trip.currency || "EUR";
       f.brl_rate.value = trip.brl_rate ?? "";
+      f.gbp_rate.value = trip.gbp_rate ?? "";
     } else {
       const s = todayISO();
       const e = parseISO(s);
@@ -559,18 +725,20 @@
       name: f.name.value.trim(),
       start_date: f.start_date.value,
       end_date: f.end_date.value,
-      budget: f.budget.value ? Number(f.budget.value) : null,
+      budget: f.budget.value ? num(f.budget.value) : null,
       currency: f.currency.value,
-      brl_rate: f.brl_rate.value ? Number(f.brl_rate.value) : null,
+      brl_rate: f.brl_rate.value ? num(f.brl_rate.value) : null,
+      gbp_rate: f.gbp_rate.value ? num(f.gbp_rate.value) : null,
     };
     if (f.id.value) data.id = f.id.value;
     try {
       const saved = await Store.saveTrip(data);
       $("#trip-dialog").close();
-      toast("Viagem salva");
+      toast(saved._pending ? "Viagem guardada no aparelho — será enviada quando houver internet" : "Viagem salva");
+      state.trip = null;
       await loadTrips(saved.id);
     } catch (err) {
-      toast("Erro ao salvar viagem: " + errMsg(err));
+      toast("Erro ao salvar viagem: " + errMsg(err), 5000);
     }
   }
 
@@ -590,9 +758,14 @@
 
   // ---------- Exportar ----------
   function exportCSV() {
-    const rows = [["Data", "Descrição", "Categoria", "Pagamento", "Valor", "Moeda", "Observação", "Lançado por"]];
+    const dec = (v) => (v == null ? "" : String(v).replace(".", ","));
+    const rows = [["Data", "Descrição", "Categoria", "Pagamento", "Valor", "Moeda", "Valor original", "Moeda original", "Cotação", "Observação", "Lançado por"]];
     for (const e of filteredExpenses()) {
-      rows.push([e.date, e.description, (CAT[e.category] || CAT.outros).label, e.payment_method || "", String(e.amount).replace(".", ","), state.trip.currency, e.notes || "", e.created_by || ""]);
+      rows.push([
+        e.date, e.description, (CAT[e.category] || CAT.outros).label, e.payment_method || "",
+        dec(e.amount), state.trip.currency, dec(e.original_amount), e.original_currency || "", dec(e.fx_rate),
+        e.notes || "", personName(e.created_by),
+      ]);
     }
     const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(";")).join("\r\n");
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
@@ -614,9 +787,18 @@
       }
     });
     $("#logout-btn").addEventListener("click", async () => {
+      const pending = Store.pendingCount();
+      if (pending && !confirm(`Há ${pending} lançamento(s) ainda não enviado(s). Se sair agora, eles serão perdidos. Sair mesmo assim?`)) return;
       await Store.signOut();
       location.reload();
     });
+    $("#sync-badge").addEventListener("click", async () => {
+      if (!navigator.onLine) return toast("Ainda sem internet. Os lançamentos serão enviados quando a conexão voltar.");
+      await Store.flush();
+      if (Store.pendingCount()) toast("Ainda não foi possível enviar. Tentando de novo em instantes.");
+    });
+    window.addEventListener("online", updateConnectivity);
+    window.addEventListener("offline", updateConnectivity);
     $("#trip-select").addEventListener("change", (e) => selectTrip(e.target.value));
     $("#new-trip-btn").addEventListener("click", () => openTripDialog(null));
     $("#empty-new-trip").addEventListener("click", () => openTripDialog(null));
@@ -625,10 +807,19 @@
     $("#delete-trip-btn").addEventListener("click", deleteTrip);
     $("#expense-form").addEventListener("submit", submitExpense);
     $("#cancel-edit-btn").addEventListener("click", resetExpenseForm);
+    $("#currency-select").addEventListener("change", updateFx);
+    $("#expense-form").amount.addEventListener("input", updateFx);
+    $("#expense-form").fx_rate.addEventListener("input", updateFx);
     $("#filter-text").addEventListener("input", renderExpenseTable);
     $("#filter-category").addEventListener("change", renderExpenseTable);
     $("#filter-day").addEventListener("change", renderExpenseTable);
+    $("#filter-person").addEventListener("change", renderExpenseTable);
     $("#export-btn").addEventListener("click", exportCSV);
+  }
+
+  // Guarda o site no aparelho para abrir mesmo sem internet.
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
   }
 
   if (window.Chart) chartDefaults();

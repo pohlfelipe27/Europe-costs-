@@ -36,6 +36,7 @@ create table if not exists public.trips (
   budget      numeric(12,2),
   currency    text not null default 'EUR',
   brl_rate    numeric(12,4),
+  gbp_rate    numeric(12,6),
   created_by  text default (auth.jwt() ->> 'email'),
   created_at  timestamptz not null default now()
 );
@@ -48,6 +49,9 @@ create table if not exists public.expenses (
   description     text not null,
   category        text not null,
   amount          numeric(12,2) not null check (amount >= 0),
+  original_currency text,
+  original_amount numeric(12,2),
+  fx_rate         numeric(12,6),
   payment_method  text,
   notes           text,
   created_by      text default (auth.jwt() ->> 'email'),

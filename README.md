@@ -9,6 +9,9 @@ Você lança cada gasto e vê indicadores, gráficos e tabelas. O visual é em p
 - **Tabelas:** resumo por categoria e lista completa com busca, filtro por categoria e por dia, e **exportação para CSV** (abre no Excel).
 - **Várias viagens:** já está pronto para crescer. Hoje você cria uma viagem de 10 dias e, depois, pode criar outras.
 - **Tempo real:** quando um familiar lança um gasto, ele aparece para todos (no modo nuvem).
+- **Funciona sem internet:** o site abre offline e os lançamentos ficam numa fila no aparelho ("⏳ não enviado"). Eles são enviados sozinhos quando a conexão volta. Não saia da conta com lançamentos pendentes, porque eles se perdem.
+- **Gastos em libra (£):** escolha £ ao lado do valor e informe a cotação. O site converte para a moeda da viagem e guarda o valor original. A cotação padrão fica em *Editar viagem*.
+- **Por pessoa:** mostra quem lançou o quê, quanto cada um lançou e o saldo se a conta for dividida igualmente. Os nomes ficam em `PEOPLE`, no `js/config.js`.
 
 É um site estático (HTML, CSS e JS, sem build). O banco de dados é o **Supabase**, que tem plano gratuito.
 
@@ -34,6 +37,8 @@ Para adicionar alguém depois, rode:
 ```sql
 insert into public.allowed_users (email) values ('fulano@email.com');
 ```
+
+Se o banco foi criado antes da função de libra, rode também `supabase/migration_002_libra.sql`.
 
 ### 3. Criar os logins
 1. Em **Authentication → Sign In / Providers**, desative **"Allow new users to sign up"**. Assim ninguém cria conta sozinho.
@@ -73,8 +78,10 @@ python3 -m http.server 8000
 ```
 index.html           página
 css/style.css        visual (preto e azul)
-js/config.js         chaves do Supabase (preencher)
-js/store.js          salvar e ler dados (Supabase ou navegador)
+js/config.js         chaves do Supabase e nomes da família
+js/store.js          salvar e ler dados (Supabase ou navegador) e fila offline
+sw.js, manifest.json funcionamento offline e instalação como app
 js/app.js            telas, indicadores, gráficos e tabelas
 supabase/schema.sql  tabelas e regras de segurança
+supabase/migration_002_libra.sql  atualização para gastos em libra
 ```
